@@ -463,11 +463,20 @@ impl BpeTrainer {
         //
         self.update_progress(&progress, words.len(), "Count pairs");
         let (mut pair_counts, mut where_to_update) = self.count_pairs(&words, &counts, &progress);
+        println!();
+        println!("ID to word");
+        println!("{:?}", id_to_word);
+        println!();
+        println!("word to ID");
+        println!("{:?}", word_to_id);
         // Insert them in the queue
         let mut queue = BinaryHeap::with_capacity(pair_counts.len());
+        println!();
+        println!("Pair Count Pos");
         where_to_update.drain().for_each(|(pair, pos)| {
             let count = pair_counts[&pair];
             if count > 0 {
+                println!("{:?} {:?} {:?}", pair, count, pos);
                 queue.push(Merge {
                     pair,
                     count: count as u64,
