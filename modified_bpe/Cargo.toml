@@ -1,0 +1,7 @@
+[package]
+name = "modified_bpe"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokenizers = { path = "../tokenizers" }
