@@ -7,6 +7,20 @@ use crate::utils::progress::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::fs::File;
+use std::io::Write;
+
+// Define a struct to represent the debug information
+#[derive(Serialize)]
+struct DebugInfo<'a> {
+    pair: (u32, u32),
+    part_a: &'a str,
+    part_b: &'a str,
+    new_token_id: u32,
+    new_token: &'a str,
+    count: u64,
+    // pos: Vec<usize>,
+}
 
 #[derive(Debug, Eq)]
 struct Merge {
@@ -483,6 +497,13 @@ impl BpeTrainer {
         //
         self.update_progress(&progress, self.vocab_size, "Compute merges");
         let mut merges: Vec<(Pair, u32)> = vec![];
+
+        // DEBUG: create a buffer, open the debug file, and set the buffer size
+        let mut debug_buffer = String::new();
+        let mut debug_file =
+            File::create("merges_info.jsonl").expect("Failed to create debug file");
+        let buffer_size = 500;
+
         loop {
             // Stop as soon as we have a big enough vocabulary
             if word_to_id.len() >= self.vocab_size {
@@ -530,8 +551,28 @@ impl BpeTrainer {
             }
             merges.push((top.pair, new_token_id));
 
-            // NOTE: debug
-            println!("Pair: {:?} ({:?} {:?}), New token: {:?} {:?}, Count: {:?}, Pos: {:?}", top.pair, &id_to_word[top.pair.0 as usize], &id_to_word[top.pair.1 as usize], new_token_id, &id_to_word[new_token_id as usize], top.count, top.pos);
+            // DEBUG: create info
+            let debug_info = DebugInfo {
+                pair: top.pair,
+                part_a: &id_to_word[top.pair.0 as usize],
+                part_b: &id_to_word[top.pair.1 as usize],
+                new_token_id,
+                new_token: &id_to_word[new_token_id as usize],
+                count: top.count,
+                // pos: top.pos.iter().copied().collect(),
+            };
+
+            // DEBUG: add info to the buffer
+            debug_buffer.push_str(&serde_json::to_string(&debug_info).unwrap());
+            debug_buffer.push('\n');
+
+            // DEBUG: After appending to the buffer, check if the buffer size has reached the threshold
+            if debug_buffer.lines().count() >= buffer_size {
+                debug_file
+                    .write_all(debug_buffer.as_bytes())
+                    .expect("Failed to write debug info to file");
+                debug_buffer.clear();
+            }
 
             // Merge the new pair in every words
             let changes = top

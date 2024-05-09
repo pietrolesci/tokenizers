@@ -3,7 +3,6 @@ use tokenizers::normalizers::{strip::Strip, unicode::NFC, utils::Sequence};
 use tokenizers::pre_tokenizers::byte_level::ByteLevel;
 use tokenizers::{AddedToken, Result, TokenizerBuilder};
 
-
 fn main() -> Result<()> {
     let vocab_size: usize = 100;
 
@@ -37,8 +36,6 @@ fn main() -> Result<()> {
     tokenizer.train_from_files(&mut trainer, vec!["data/test_small.txt".to_string()])?;
 
     println!("Final vocab: {:?}", tokenizer.get_vocab(true));
-
-
 
     Ok(())
 }
