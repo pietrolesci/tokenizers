@@ -8,19 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fs::File;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 
-// Define a struct to represent the debug information
-#[derive(Serialize)]
-struct DebugInfo<'a> {
-    pair: (u32, u32),
-    part_a: &'a str,
-    part_b: &'a str,
-    new_token_id: u32,
-    new_token: &'a str,
-    count: u64,
-    // pos: Vec<usize>,
-}
 
 #[derive(Debug, Eq)]
 struct Merge {
@@ -477,6 +466,22 @@ impl BpeTrainer {
         //
         self.update_progress(&progress, words.len(), "Count pairs");
         let (mut pair_counts, mut where_to_update) = self.count_pairs(&words, &counts, &progress);
+        
+
+        // =======================================================================
+        // (Pietro): Open file and create structure to log
+        let file1 = File::create("all_merges.jsonl").expect("Failed to create debug file");
+        let mut file1 = BufWriter::new(file1);
+        
+        #[derive(Serialize)]
+        struct PossibleMerge<'a> {
+            pair: (u32, u32),
+            part_a: &'a str,
+            part_b: &'a str,
+            count: i32,
+        }
+        // =======================================================================
+
 
         // Insert them in the queue
         let mut queue = BinaryHeap::with_capacity(pair_counts.len());
@@ -488,6 +493,22 @@ impl BpeTrainer {
                     count: count as u64,
                     pos,
                 });
+
+
+                // =======================================================================
+                // (Pietro): log information
+                let buf = PossibleMerge {
+                    pair,
+                    part_a: &id_to_word[pair.0 as usize],
+                    part_b: &id_to_word[pair.1 as usize],
+                    count,
+                };
+                writeln!(file1, "{}", serde_json::to_string(&buf).unwrap()).expect("Failed to write debug info to file");
+                // debug_file
+                //     .write_all(format!("{}\n", serde_json::to_string(&buf).unwrap()).as_bytes())
+                //     .expect("Failed to write debug info to file");
+                // =======================================================================
+
             }
         });
         self.finalize_progress(&progress, words.len());
@@ -498,11 +519,22 @@ impl BpeTrainer {
         self.update_progress(&progress, self.vocab_size, "Compute merges");
         let mut merges: Vec<(Pair, u32)> = vec![];
 
-        // DEBUG: create a buffer, open the debug file, and set the buffer size
-        let mut debug_buffer = String::new();
-        let mut debug_file =
-            File::create("merges_info.jsonl").expect("Failed to create debug file");
-        let buffer_size = 500;
+
+        // =======================================================================
+        // (Pietro): Open file and create structure to log
+        #[derive(Serialize)]
+        struct ImplementedMerge<'a> {
+            pair: (u32, u32),
+            part_a: &'a str,
+            part_b: &'a str,
+            count: i32,
+            new_token_id: u32,
+            new_token: &'a str,
+        }
+        let file2 = File::create("implemented_merges.jsonl").expect("Failed to create debug file");
+        let mut file2 = BufWriter::new(file2);
+        // =======================================================================
+
 
         loop {
             // Stop as soon as we have a big enough vocabulary
@@ -541,7 +573,7 @@ impl BpeTrainer {
             // default should be 0/None to maintain previous behavior. 16 is the spm default.
 
             // Insert new token if it does not already exist
-            let new_token_id = word_to_id
+            let new_token_id: u32 = word_to_id
                 .get(&new_token)
                 .copied()
                 .unwrap_or(id_to_word.len() as u32);
@@ -551,28 +583,22 @@ impl BpeTrainer {
             }
             merges.push((top.pair, new_token_id));
 
-            // DEBUG: create info
-            let debug_info = DebugInfo {
+            // =======================================================================
+            // (Pietro): log information
+            let buf = ImplementedMerge {
                 pair: top.pair,
                 part_a: &id_to_word[top.pair.0 as usize],
                 part_b: &id_to_word[top.pair.1 as usize],
                 new_token_id,
                 new_token: &id_to_word[new_token_id as usize],
-                count: top.count,
-                // pos: top.pos.iter().copied().collect(),
+                count: top.count as i32,
             };
-
-            // DEBUG: add info to the buffer
-            debug_buffer.push_str(&serde_json::to_string(&debug_info).unwrap());
-            debug_buffer.push('\n');
-
-            // DEBUG: After appending to the buffer, check if the buffer size has reached the threshold
-            if debug_buffer.lines().count() >= buffer_size {
-                debug_file
-                    .write_all(debug_buffer.as_bytes())
-                    .expect("Failed to write debug info to file");
-                debug_buffer.clear();
-            }
+            
+            writeln!(file2, "{}", serde_json::to_string(&buf).unwrap()).expect("Failed to write debug info to file");
+            // debug_file
+            //     .write_all(format!("{}\n", serde_json::to_string(&buf).unwrap()).as_bytes())
+            //     .expect("Failed to write debug info to file");
+            // =======================================================================
 
             // Merge the new pair in every words
             let changes = top
