@@ -1,3 +1,4 @@
+use serde::Serialize;
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 
@@ -462,7 +463,8 @@ type Tokenizer = TokenizerImpl<PyModel, PyNormalizer, PyPreTokenizer, PyPostProc
 ///         The core algorithm that this :obj:`Tokenizer` should be using.
 ///
 #[pyclass(dict, module = "tokenizers", name = "Tokenizer")]
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
+#[serde(transparent)]
 pub struct PyTokenizer {
     tokenizer: Tokenizer,
 }
@@ -636,6 +638,16 @@ impl PyTokenizer {
     #[pyo3(text_signature = "(self, path, pretty=True)")]
     fn save(&self, path: &str, pretty: bool) -> PyResult<()> {
         ToPyResult(self.tokenizer.save(path, pretty)).into()
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        crate::utils::serde_pyo3::repr(self)
+            .map_err(|e| exceptions::PyException::new_err(e.to_string()))
+    }
+
+    fn __str__(&self) -> PyResult<String> {
+        crate::utils::serde_pyo3::to_string(self)
+            .map_err(|e| exceptions::PyException::new_err(e.to_string()))
     }
 
     /// Return the number of special tokens that would be added for single/pair sentences.
@@ -1043,6 +1055,67 @@ impl PyTokenizer {
         })
     }
 
+    /// Encode the given batch of inputs. This method is faster than `encode_batch`
+    /// because it doesn't keep track of offsets, they will be all zeros.
+    ///
+    /// Example:
+    ///     Here are some examples of the inputs that are accepted::
+    ///
+    ///         encode_batch_fast([
+    ///             "A single sequence",
+    ///             ("A tuple with a sequence", "And its pair"),
+    ///             [ "A", "pre", "tokenized", "sequence" ],
+    ///             ([ "A", "pre", "tokenized", "sequence" ], "And its pair")
+    ///         ])
+    ///
+    /// Args:
+    ///     input (A :obj:`List`/:obj:`Tuple` of :obj:`~tokenizers.EncodeInput`):
+    ///         A list of single sequences or pair sequences to encode. Each sequence
+    ///         can be either raw text or pre-tokenized, according to the ``is_pretokenized``
+    ///         argument:
+    ///
+    ///         - If ``is_pretokenized=False``: :class:`~tokenizers.TextEncodeInput`
+    ///         - If ``is_pretokenized=True``: :class:`~tokenizers.PreTokenizedEncodeInput`
+    ///
+    ///     is_pretokenized (:obj:`bool`, defaults to :obj:`False`):
+    ///         Whether the input is already pre-tokenized
+    ///
+    ///     add_special_tokens (:obj:`bool`, defaults to :obj:`True`):
+    ///         Whether to add the special tokens
+    ///
+    /// Returns:
+    ///     A :obj:`List` of :class:`~tokenizers.Encoding`: The encoded batch
+    ///
+    #[pyo3(signature = (input, is_pretokenized = false, add_special_tokens = true))]
+    #[pyo3(text_signature = "(self, input, is_pretokenized=False, add_special_tokens=True)")]
+    fn encode_batch_fast(
+        &self,
+        py: Python<'_>,
+        input: Vec<&PyAny>,
+        is_pretokenized: bool,
+        add_special_tokens: bool,
+    ) -> PyResult<Vec<PyEncoding>> {
+        let input: Vec<tk::EncodeInput> = input
+            .into_iter()
+            .map(|o| {
+                let input: tk::EncodeInput = if is_pretokenized {
+                    o.extract::<PreTokenizedEncodeInput>()?.into()
+                } else {
+                    o.extract::<TextEncodeInput>()?.into()
+                };
+                Ok(input)
+            })
+            .collect::<PyResult<Vec<tk::EncodeInput>>>()?;
+        py.allow_threads(|| {
+            ToPyResult(
+                self.tokenizer
+                    .encode_batch_fast(input, add_special_tokens)
+                    .map(|encodings| encodings.into_iter().map(|e| e.into()).collect()),
+            )
+            .into()
+        })
+    }
+
     /// Decode the given list of ids back to a string
     ///
     /// This is used to decode anything coming back from a Language Model
@@ -1359,8 +1432,9 @@ impl PyTokenizer {
 
     /// Set the :class:`~tokenizers.normalizers.Normalizer`
     #[setter]
-    fn set_normalizer(&mut self, normalizer: PyRef<PyNormalizer>) {
-        self.tokenizer.with_normalizer(normalizer.clone());
+    fn set_normalizer(&mut self, normalizer: Option<PyRef<PyNormalizer>>) {
+        let normalizer_option = normalizer.map(|norm| norm.clone());
+        self.tokenizer.with_normalizer(normalizer_option);
     }
 
     /// The `optional` :class:`~tokenizers.pre_tokenizers.PreTokenizer` in use by the Tokenizer
@@ -1375,8 +1449,9 @@ impl PyTokenizer {
 
     /// Set the :class:`~tokenizers.normalizers.Normalizer`
     #[setter]
-    fn set_pre_tokenizer(&mut self, pretok: PyRef<PyPreTokenizer>) {
-        self.tokenizer.with_pre_tokenizer(pretok.clone());
+    fn set_pre_tokenizer(&mut self, pretok: Option<PyRef<PyPreTokenizer>>) {
+        self.tokenizer
+            .with_pre_tokenizer(pretok.map(|pre| pre.clone()));
     }
 
     /// The `optional` :class:`~tokenizers.processors.PostProcessor` in use by the Tokenizer
@@ -1391,8 +1466,9 @@ impl PyTokenizer {
 
     /// Set the :class:`~tokenizers.processors.PostProcessor`
     #[setter]
-    fn set_post_processor(&mut self, processor: PyRef<PyPostProcessor>) {
-        self.tokenizer.with_post_processor(processor.clone());
+    fn set_post_processor(&mut self, processor: Option<PyRef<PyPostProcessor>>) {
+        self.tokenizer
+            .with_post_processor(processor.map(|p| p.clone()));
     }
 
     /// The `optional` :class:`~tokenizers.decoders.Decoder` in use by the Tokenizer
@@ -1407,8 +1483,8 @@ impl PyTokenizer {
 
     /// Set the :class:`~tokenizers.decoders.Decoder`
     #[setter]
-    fn set_decoder(&mut self, decoder: PyRef<PyDecoder>) {
-        self.tokenizer.with_decoder(decoder.clone());
+    fn set_decoder(&mut self, decoder: Option<PyRef<PyDecoder>>) {
+        self.tokenizer.with_decoder(decoder.map(|d| d.clone()));
     }
 }
 
@@ -1424,14 +1500,30 @@ mod test {
     #[test]
     fn serialize() {
         let mut tokenizer = Tokenizer::new(PyModel::from(BPE::default()));
-        tokenizer.with_normalizer(PyNormalizer::new(PyNormalizerTypeWrapper::Sequence(vec![
-            Arc::new(RwLock::new(NFKC.into())),
-            Arc::new(RwLock::new(Lowercase.into())),
-        ])));
+        tokenizer.with_normalizer(Some(PyNormalizer::new(PyNormalizerTypeWrapper::Sequence(
+            vec![
+                Arc::new(RwLock::new(NFKC.into())),
+                Arc::new(RwLock::new(Lowercase.into())),
+            ],
+        ))));
 
         let tmp = NamedTempFile::new().unwrap().into_temp_path();
         tokenizer.save(&tmp, false).unwrap();
 
         Tokenizer::from_file(&tmp).unwrap();
+    }
+
+    #[test]
+    fn serde_pyo3() {
+        let mut tokenizer = Tokenizer::new(PyModel::from(BPE::default()));
+        tokenizer.with_normalizer(Some(PyNormalizer::new(PyNormalizerTypeWrapper::Sequence(
+            vec![
+                Arc::new(RwLock::new(NFKC.into())),
+                Arc::new(RwLock::new(Lowercase.into())),
+            ],
+        ))));
+
+        let output = crate::utils::serde_pyo3::to_string(&tokenizer).unwrap();
+        assert_eq!(output, "Tokenizer(version=\"1.0\", truncation=None, padding=None, added_tokens=[], normalizer=Sequence(normalizers=[NFKC(), Lowercase()]), pre_tokenizer=None, post_processor=None, decoder=None, model=BPE(dropout=None, unk_token=None, continuing_subword_prefix=None, end_of_word_suffix=None, fuse_unk=False, byte_fallback=False, ignore_merges=False, vocab={}, merges=[]))");
     }
 }

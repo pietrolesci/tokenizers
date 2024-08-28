@@ -67,6 +67,15 @@ class TestSequence:
         output = normalizer.normalize_str("  HELLO  ")
         assert output == "hello"
 
+    def test_items(self):
+        normalizers = Sequence([BertNormalizer(True, True), Prepend(), Strip()])
+        assert normalizers[1].__class__ == Prepend
+        normalizers[0].lowercase = False
+        assert not normalizers[0].lowercase
+        assert normalizers[2].__class__ == Strip
+        with pytest.raises(IndexError):
+            print(normalizers[3])
+
 
 class TestLowercase:
     def test_instantiate(self):

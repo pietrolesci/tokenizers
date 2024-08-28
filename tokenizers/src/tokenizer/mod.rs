@@ -3,11 +3,11 @@
 //! A [`Tokenizer`](struct.Tokenizer.html) is composed of some of the following parts.
 //!   - [`Normalizer`](trait.Normalizer.html): Takes care of the text normalization (like unicode normalization).
 //!   - [`PreTokenizer`](trait.PreTokenizer.html): Takes care of the pre tokenization (ie. How to split tokens and pre-process
-//!   them.
+//!     them.
 //!   - [`Model`](trait.Model.html): A model encapsulates the tokenization algorithm (like BPE, Word base, character
-//!   based, ...).
+//!     based, ...).
 //!   - [`PostProcessor`](trait.PostProcessor.html): Takes care of the processing after tokenization (like truncating, padding,
-//!   ...).
+//!     ...).
 
 use std::{
     collections::HashMap,
@@ -550,19 +550,18 @@ where
     }
 
     /// Set the normalizer
-    pub fn with_normalizer(&mut self, normalizer: impl Into<N>) -> &mut Self {
-        self.normalizer = Some(normalizer.into());
+    pub fn with_normalizer(&mut self, normalizer: Option<impl Into<N>>) -> &mut Self {
+        self.normalizer = normalizer.map(|norm| norm.into());
         self
     }
-
     /// Get the normalizer
     pub fn get_normalizer(&self) -> Option<&N> {
         self.normalizer.as_ref()
     }
 
     /// Set the pre tokenizer
-    pub fn with_pre_tokenizer(&mut self, pre_tokenizer: impl Into<PT>) -> &mut Self {
-        self.pre_tokenizer = Some(pre_tokenizer.into());
+    pub fn with_pre_tokenizer(&mut self, pre_tokenizer: Option<impl Into<PT>>) -> &mut Self {
+        self.pre_tokenizer = pre_tokenizer.map(|tok| tok.into());
         self
     }
 
@@ -572,8 +571,8 @@ where
     }
 
     /// Set the post processor
-    pub fn with_post_processor(&mut self, post_processor: impl Into<PP>) -> &mut Self {
-        self.post_processor = Some(post_processor.into());
+    pub fn with_post_processor(&mut self, post_processor: Option<impl Into<PP>>) -> &mut Self {
+        self.post_processor = post_processor.map(|post_proc| post_proc.into());
         self
     }
 
@@ -583,8 +582,8 @@ where
     }
 
     /// Set the decoder
-    pub fn with_decoder(&mut self, decoder: impl Into<D>) -> &mut Self {
-        self.decoder = Some(decoder.into());
+    pub fn with_decoder(&mut self, decoder: Option<impl Into<D>>) -> &mut Self {
+        self.decoder = decoder.map(|dec| dec.into());
         self
     }
 
@@ -762,6 +761,48 @@ where
 
     /// Encode the given input. This method accepts both single sequences, as well as pair
     /// sequences. Also, a sequence can be a string, or already pre-tokenized input directly:
+    /// Contrarily to `encode`, it does not compute offsets
+    /// ```
+    /// # use tokenizers::Tokenizer;
+    /// # use tokenizers::models::bpe::BPE;
+    /// # let mut tokenizer = Tokenizer::new(BPE::default());
+    /// #
+    /// // Sequences:
+    /// tokenizer.encode_fast("Single sequence", false);
+    /// tokenizer.encode_fast(("Sequence A", "Sequence B"), false);
+    ///
+    /// // Pre-tokenized sequences:
+    /// tokenizer.encode_fast(&["Single", "sequence"][..], false);
+    /// tokenizer.encode_fast((
+    ///     &["Sequence", "A"][..],
+    ///     &["Sequence", "B"][..]
+    /// ), false);
+    ///
+    /// // or even both types together:
+    /// tokenizer.encode_fast(("A complete sequence", &["And", "a", "tokenized"][..]), false);
+    /// ```
+    pub fn encode_fast<'s, E>(&self, input: E, add_special_tokens: bool) -> Result<Encoding>
+    where
+        E: Into<EncodeInput<'s>>,
+    {
+        // Extract sequences from the EncodeInput
+        let (sequence, pair) = match input.into() {
+            EncodeInput::Single(s1) => (s1, None),
+            EncodeInput::Dual(s1, s2) => (s1, Some(s2)),
+        };
+
+        // Encode each sequence
+        let encoding = self.encode_single_sequence(sequence, 0, OffsetType::None)?;
+        let pair_encoding = pair
+            .map(|sequence| self.encode_single_sequence(sequence, 1, OffsetType::None))
+            .transpose()?;
+
+        // And finally post process
+        self.post_process(encoding, pair_encoding, add_special_tokens)
+    }
+
+    /// Encode the given input. This method accepts both single sequences, as well as pair
+    /// sequences. Also, a sequence can be a string, or already pre-tokenized input directly:
     ///
     /// ```
     /// # use tokenizers::Tokenizer;
@@ -847,35 +888,23 @@ where
 
     /// Decode the given ids, back to a String
     pub fn decode(&self, ids: &[u32], skip_special_tokens: bool) -> Result<String> {
-        let mut result = String::with_capacity(ids.len());
-        let mut chunks = Vec::with_capacity(ids.len());
-        for id in ids {
-            if let Some(added_token) = self.added_vocabulary.simple_id_to_token(*id) {
-                if skip_special_tokens && self.added_vocabulary.is_special_token(&added_token) {
-                    continue;
-                }
-                let text_chunk = if let Some(decoder) = &self.decoder {
-                    decoder.decode(chunks.clone())?
-                } else {
-                    chunks.join(" ")
-                };
-                result.push_str(&text_chunk);
-                if !result.is_empty() && self.decoder.is_none() {
-                    result.push(' ');
-                }
-                result.push_str(&added_token);
-                chunks.clear();
-            } else if let Some(token) = self.model.id_to_token(*id) {
-                chunks.push(token);
-            }
-        }
-        let text_chunk = if let Some(decoder) = &self.decoder {
-            decoder.decode(chunks.clone())?
+        let tokens = ids
+            .iter()
+            .filter_map(|id| {
+                self.added_vocabulary
+                    .simple_id_to_token(*id)
+                    .or_else(|| self.model.id_to_token(*id))
+                    .filter(|token| {
+                        !skip_special_tokens || !self.added_vocabulary.is_special_token(token)
+                    })
+            })
+            .collect::<Vec<_>>();
+
+        if let Some(decoder) = &self.decoder {
+            decoder.decode(tokens)
         } else {
-            chunks.join(" ")
-        };
-        result.push_str(&text_chunk);
-        Ok(result)
+            Ok(tokens.join(" "))
+        }
     }
 }
 
@@ -1062,6 +1091,28 @@ where
         let mut encodings = inputs
             .into_maybe_par_iter()
             .map(|input| self.encode_char_offsets(input, add_special_tokens))
+            .collect::<Result<Vec<Encoding>>>()?;
+
+        if let Some(params) = &self.padding {
+            // We do the padding here to make sure we handle the batch padding
+            pad_encodings(&mut encodings, params)?;
+        }
+
+        Ok(encodings)
+    }
+
+    /// Encode all the sentences in parallel, using multiple threads
+    pub fn encode_batch_fast<'s, E>(
+        &self,
+        inputs: Vec<E>,
+        add_special_tokens: bool,
+    ) -> Result<Vec<Encoding>>
+    where
+        E: Into<EncodeInput<'s>> + Send,
+    {
+        let mut encodings = inputs
+            .into_maybe_par_iter()
+            .map(|input| self.encode_fast(input, add_special_tokens))
             .collect::<Result<Vec<Encoding>>>()?;
 
         if let Some(params) = &self.padding {
@@ -1304,5 +1355,59 @@ where
         file.write_all(serialized.as_bytes())?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    #[cfg(feature = "http")]
+    #[test]
+    fn test_decoding_with_added_bpe() {
+        use crate::{
+            normalizers,
+            pre_tokenizers::split::{Split, SplitPattern},
+            AddedToken, NormalizerWrapper, PreTokenizerWrapper, SplitDelimiterBehavior, Tokenizer,
+        };
+
+        let mut tokenizer = Tokenizer::from_pretrained("meta-llama/Meta-Llama-3-8B", None).unwrap();
+        tokenizer.normalizer = Some(NormalizerWrapper::from(normalizers::ByteLevel::new()));
+        tokenizer.pre_tokenizer = Some(PreTokenizerWrapper::Split(
+            Split::new(
+                SplitPattern::Regex(r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+".into()),
+                SplitDelimiterBehavior::Isolated,
+                false,
+            )
+            .unwrap(),
+        ));
+        tokenizer.add_tokens(&[AddedToken::from("嗎", false).normalized(false)]);
+        let encoded = tokenizer
+            .encode("Hey! how is this token: 嗎", false)
+            .unwrap();
+        assert_eq!(
+            encoded.get_ids(),
+            [19182, 0, 1268, 602, 82, 62428, 82, 4037, 25, 220, 128256]
+        );
+        assert_eq!(
+            encoded.get_tokens(),
+            ["Hey", "!", "Ġhow", "Ġi", "s", "Ġthi", "s", "Ġtoken", ":", "Ġ", "嗎"]
+        );
+
+        let decoded = tokenizer.decode(encoded.get_ids(), false);
+        assert_eq!(decoded.unwrap(), "Hey! how is this token: 嗎");
+
+        tokenizer.add_tokens(&[AddedToken::from("д", false).normalized(true)]);
+        let encoded = tokenizer
+            .encode("Hey! how is this token: д", false)
+            .unwrap();
+        assert_eq!(
+            encoded.get_ids(),
+            [19182, 0, 1268, 602, 82, 62428, 82, 4037, 25, 220, 128257]
+        );
+        assert_eq!(
+            encoded.get_tokens(),
+            ["Hey", "!", "Ġhow", "Ġi", "s", "Ġthi", "s", "Ġtoken", ":", "Ġ", "Ð´"]
+        );
+        let decoded = tokenizer.decode(encoded.get_ids(), false);
+        assert_eq!(decoded.unwrap(), "Hey! how is this token: д")
     }
 }

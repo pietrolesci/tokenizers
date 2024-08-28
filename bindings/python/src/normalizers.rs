@@ -1,16 +1,14 @@
-use std::sync::{Arc, RwLock};
-
-use pyo3::exceptions;
-use pyo3::prelude::*;
 use pyo3::types::*;
+use pyo3::{exceptions, prelude::*};
+use std::sync::{Arc, RwLock};
 
 use crate::error::ToPyResult;
 use crate::utils::{PyNormalizedString, PyNormalizedStringRefMut, PyPattern};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tk::normalizers::{
-    BertNormalizer, Lowercase, Nmt, NormalizerWrapper, Precompiled, Prepend, Replace, Strip,
-    StripAccents, NFC, NFD, NFKC, NFKD,
+    BertNormalizer, ByteLevel, Lowercase, Nmt, NormalizerWrapper, Precompiled, Prepend, Replace,
+    Strip, StripAccents, NFC, NFD, NFKC, NFKD,
 };
 use tk::{NormalizedString, Normalizer};
 use tokenizers as tk;
@@ -44,8 +42,8 @@ impl PyNormalizedStringMut<'_> {
 /// Normalizer will return an instance of this class when instantiated.
 #[pyclass(dict, module = "tokenizers.normalizers", name = "Normalizer", subclass)]
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct PyNormalizer {
-    #[serde(flatten)]
     pub(crate) normalizer: PyNormalizerTypeWrapper,
 }
 
@@ -67,9 +65,12 @@ impl PyNormalizer {
                         Py::new(py, (PyBertNormalizer {}, base))?.into_py(py)
                     }
                     NormalizerWrapper::StripNormalizer(_) => {
-                        Py::new(py, (PyBertNormalizer {}, base))?.into_py(py)
+                        Py::new(py, (PyStrip {}, base))?.into_py(py)
                     }
                     NormalizerWrapper::Prepend(_) => Py::new(py, (PyPrepend {}, base))?.into_py(py),
+                    NormalizerWrapper::ByteLevel(_) => {
+                        Py::new(py, (PyByteLevel {}, base))?.into_py(py)
+                    }
                     NormalizerWrapper::StripAccents(_) => {
                         Py::new(py, (PyStripAccents {}, base))?.into_py(py)
                     }
@@ -165,6 +166,16 @@ impl PyNormalizer {
         let mut normalized = NormalizedString::from(sequence);
         ToPyResult(self.normalizer.normalize(&mut normalized)).into_py()?;
         Ok(normalized.get().to_owned())
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        crate::utils::serde_pyo3::repr(self)
+            .map_err(|e| exceptions::PyException::new_err(e.to_string()))
+    }
+
+    fn __str__(&self) -> PyResult<String> {
+        crate::utils::serde_pyo3::to_string(self)
+            .map_err(|e| exceptions::PyException::new_err(e.to_string()))
     }
 }
 
@@ -341,6 +352,7 @@ impl PyNFKC {
 ///         A list of Normalizer to be run as a sequence
 #[pyclass(extends=PyNormalizer, module = "tokenizers.normalizers", name = "Sequence")]
 pub struct PySequence {}
+
 #[pymethods]
 impl PySequence {
     #[new]
@@ -366,6 +378,22 @@ impl PySequence {
 
     fn __len__(&self) -> usize {
         0
+    }
+
+    fn __getitem__(self_: PyRef<'_, Self>, py: Python<'_>, index: usize) -> PyResult<Py<PyAny>> {
+        match &self_.as_ref().normalizer {
+            PyNormalizerTypeWrapper::Sequence(inner) => match inner.get(index) {
+                Some(item) => PyNormalizer::new(PyNormalizerTypeWrapper::Single(Arc::clone(item)))
+                    .get_as_subtype(py),
+                _ => Err(PyErr::new::<pyo3::exceptions::PyIndexError, _>(
+                    "Index not found",
+                )),
+            },
+            PyNormalizerTypeWrapper::Single(inner) => {
+                PyNormalizer::new(PyNormalizerTypeWrapper::Single(Arc::clone(inner)))
+                    .get_as_subtype(py)
+            }
+        }
     }
 }
 
@@ -432,6 +460,18 @@ impl PyPrepend {
     #[pyo3(signature = (prepend="▁".to_string()), text_signature = "(self, prepend)")]
     fn new(prepend: String) -> (Self, PyNormalizer) {
         (PyPrepend {}, Prepend::new(prepend).into())
+    }
+}
+
+/// Bytelevel Normalizer
+#[pyclass(extends=PyNormalizer, module = "tokenizers.normalizers", name = "ByteLevel")]
+pub struct PyByteLevel {}
+#[pymethods]
+impl PyByteLevel {
+    #[new]
+    #[pyo3(text_signature = "(self)")]
+    fn new() -> (Self, PyNormalizer) {
+        (PyByteLevel {}, ByteLevel::new().into())
     }
 }
 
@@ -647,6 +687,7 @@ pub fn normalizers(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyStrip>()?;
     m.add_class::<PyStripAccents>()?;
     m.add_class::<PyPrepend>()?;
+    m.add_class::<PyByteLevel>()?;
     m.add_class::<PyNmt>()?;
     m.add_class::<PyPrecompiled>()?;
     m.add_class::<PyReplace>()?;

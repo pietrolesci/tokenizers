@@ -26,8 +26,8 @@ use super::error::{deprecation_warning, ToPyResult};
 /// This class cannot be constructed directly. Please use one of the concrete models.
 #[pyclass(module = "tokenizers.models", name = "Model", subclass)]
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct PyModel {
-    #[serde(flatten)]
     pub model: Arc<RwLock<ModelWrapper>>,
 }
 
@@ -220,13 +220,23 @@ impl PyModel {
     fn get_trainer(&self, py: Python<'_>) -> PyResult<PyObject> {
         PyTrainer::from(self.model.read().unwrap().get_trainer()).get_as_subtype(py)
     }
+
+    fn __repr__(&self) -> PyResult<String> {
+        crate::utils::serde_pyo3::repr(self)
+            .map_err(|e| exceptions::PyException::new_err(e.to_string()))
+    }
+
+    fn __str__(&self) -> PyResult<String> {
+        crate::utils::serde_pyo3::to_string(self)
+            .map_err(|e| exceptions::PyException::new_err(e.to_string()))
+    }
 }
 
 /// An implementation of the BPE (Byte-Pair Encoding) algorithm
 ///
 /// Args:
 ///     vocab (:obj:`Dict[str, int]`, `optional`):
-///         A dictionnary of string keys and their ids :obj:`{"am": 0,...}`
+///         A dictionary of string keys and their ids :obj:`{"am": 0,...}`
 ///
 ///     merges (:obj:`List[Tuple[str, str]]`, `optional`):
 ///         A list of pairs of tokens (:obj:`Tuple[str, str]`) :obj:`[("a", "b"),...]`
@@ -530,7 +540,7 @@ impl PyBPE {
 ///
 /// Args:
 ///     vocab (:obj:`Dict[str, int]`, `optional`):
-///         A dictionnary of string keys and their ids :obj:`{"am": 0,...}`
+///         A dictionary of string keys and their ids :obj:`{"am": 0,...}`
 ///
 ///     unk_token (:obj:`str`, `optional`):
 ///         The unknown token to be used by the model.
@@ -701,7 +711,7 @@ impl PyWordPiece {
 ///
 /// Args:
 ///     vocab (:obj:`str`, `optional`):
-///         A dictionnary of string keys and their ids :obj:`{"am": 0,...}`
+///         A dictionary of string keys and their ids :obj:`{"am": 0,...}`
 ///
 ///     unk_token (:obj:`str`, `optional`):
 ///         The unknown token to be used by the model.

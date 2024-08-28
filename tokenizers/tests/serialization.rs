@@ -203,7 +203,7 @@ fn models() {
 fn tokenizer() {
     let wordpiece = WordPiece::default();
     let mut tokenizer = Tokenizer::new(wordpiece);
-    tokenizer.with_normalizer(NFC);
+    tokenizer.with_normalizer(Some(NFC));
     let ser = serde_json::to_string(&tokenizer).unwrap();
     let _: Tokenizer = serde_json::from_str(&ser).unwrap();
     let unwrapped_nfc_tok: TokenizerImpl<
@@ -227,6 +227,21 @@ fn tokenizer() {
         DecoderWrapper,
     > = serde_json::from_str(&ser).unwrap();
     assert_eq!(serde_json::to_string(&de).unwrap(), ser);
+}
+
+#[test]
+fn bpe_with_dropout_serde() {
+    let mut bpe = BPE::default();
+    bpe.dropout = Some(0.1);
+    let ser = serde_json::to_string(&bpe).unwrap();
+    let de = serde_json::from_str(&ser).unwrap();
+    assert_eq!(bpe, de);
+
+    // set dropout to 0.0 (which is analogous to None) and reserialize
+    bpe.dropout = Some(0.0);
+    let ser = serde_json::to_string(&bpe).unwrap();
+    let de = serde_json::from_str(&ser).unwrap();
+    assert_eq!(bpe, de);
 }
 
 #[test]

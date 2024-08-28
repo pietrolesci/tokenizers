@@ -8,6 +8,7 @@ use std::collections::HashMap;
 pub enum OffsetType {
     Byte,
     Char,
+    None,
 }
 
 /// Wrapper for a subpart of a `NormalizedString`.
@@ -65,9 +66,9 @@ impl PreTokenizedString {
     ///
     /// There are only one constraint that *MUST* be respected:
     /// > The produced `NormalizedString`, if combined back together, must have the
-    /// same `original` string as the original one given to `split_fn`. This concretely
-    /// means that for the offset tracking to work as expected, `split_fn` must produce
-    /// "splits" of the original string.
+    /// > same `original` string as the original one given to `split_fn`. This concretely
+    /// > means that for the offset tracking to work as expected, `split_fn` must produce
+    /// > "splits" of the original string.
     pub fn split<F, U, R>(&mut self, mut split_fn: F) -> Result<()>
     where
         F: FnMut(usize, NormalizedString) -> Result<U>,
@@ -146,6 +147,19 @@ impl PreTokenizedString {
             let offset_converter = match offset_type {
                 OffsetType::Char => Some(BytesToCharOffsetConverter::new(&self.original)),
                 OffsetType::Byte => None,
+                OffsetType::None => {
+                    let tokens = self
+                        .splits
+                        .into_iter()
+                        .flat_map(|split| {
+                            split.tokens.unwrap().into_iter().map(|token| {
+                                // Replace this with the actual fields you need for the Encoding type
+                                (token.id, String::with_capacity(0), (0, 0), None, 0)
+                            })
+                        })
+                        .collect();
+                    return Ok(tokens);
+                }
             };
 
             Ok(self
@@ -197,6 +211,7 @@ impl PreTokenizedString {
         let offset_converter = match offset_type {
             OffsetType::Char => Some(BytesToCharOffsetConverter::new(&self.original)),
             OffsetType::Byte => None,
+            OffsetType::None => None,
         };
 
         let mut offset = 0;

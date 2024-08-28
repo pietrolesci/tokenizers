@@ -285,8 +285,8 @@ impl BpeTrainer {
         for c in &self.initial_alphabet {
             alphabet
                 .entry(*c)
-                .and_modify(|cnt| *cnt = std::usize::MAX)
-                .or_insert(std::usize::MAX);
+                .and_modify(|cnt| *cnt = usize::MAX)
+                .or_insert(usize::MAX);
         }
 
         let mut kept = alphabet.iter().collect::<Vec<_>>();
@@ -577,7 +577,7 @@ impl BpeTrainer {
                 .get(&new_token)
                 .copied()
                 .unwrap_or(id_to_word.len() as u32);
-            if word_to_id.get(&new_token).is_none() {
+            if !word_to_id.contains_key(&new_token) {
                 id_to_word.push(new_token.clone());
                 word_to_id.insert(new_token.clone(), new_token_id);
             }
