@@ -85,7 +85,7 @@ meta = srsly.read_yaml(path / "metadata.yaml")
 eos_token: str = meta["eos_token"]  # type: ignore
 unk_token: str | None = meta.get("unk_token", None)  # type: ignore
    
-# Finally, instantiate PreTrainedTokenizerFast (from `transformers` library) from tokenizer object
+# Instantiate PreTrainedTokenizerFast (from `transformers` library) from tokenizer object
 # NOTE: we do not instantiate from file directly due to compatibility
 # https://github.com/huggingface/tokenizers/issues/1562#issuecomment-2315349846
 tok = PreTrainedTokenizerFast(tokenizer_object=backend_tok, clean_up_tokenization_spaces=True)
