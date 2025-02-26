@@ -504,9 +504,6 @@ impl BpeTrainer {
                     count,
                 };
                 writeln!(file1, "{}", serde_json::to_string(&buf).unwrap()).expect("Failed to write debug info to file");
-                // debug_file
-                //     .write_all(format!("{}\n", serde_json::to_string(&buf).unwrap()).as_bytes())
-                //     .expect("Failed to write debug info to file");
                 // =======================================================================
 
             }
@@ -595,9 +592,6 @@ impl BpeTrainer {
             };
             
             writeln!(file2, "{}", serde_json::to_string(&buf).unwrap()).expect("Failed to write debug info to file");
-            // debug_file
-            //     .write_all(format!("{}\n", serde_json::to_string(&buf).unwrap()).as_bytes())
-            //     .expect("Failed to write debug info to file");
             // =======================================================================
 
             // Merge the new pair in every words
