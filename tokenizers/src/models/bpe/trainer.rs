@@ -470,7 +470,7 @@ impl BpeTrainer {
 
         // =======================================================================
         // (Pietro): Open file and create structure to log
-        let file1 = File::create("all_merges.jsonl").expect("Failed to create debug file");
+        let file1 = File::create("candidates.jsonl").expect("Failed to create debug file");
         let mut file1 = BufWriter::new(file1);
         
         #[derive(Serialize)]

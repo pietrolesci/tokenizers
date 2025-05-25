@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
+use std::fs::OpenOptions;
+use std::io::Write;
 
 // A token and a score
 type SentencePiece = (String, f64);
@@ -117,6 +119,21 @@ impl UnigramTrainer {
         let mut pieces: Vec<(String, f64)> = vec![];
         let mut inserted: HashSet<String> = HashSet::new();
 
+        // =======================================================================
+        // (Pietro): Log the pruning process to a CSV file
+        // Open the CSV file in append mode
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("pruning_log.csv")
+            .expect("Unable to open file");
+        
+        // Log header if the file is empty
+        if file.metadata().unwrap().len() == 0 {
+            writeln!(file, "id,token,loss,pruning_step,is_pruned").expect("Unable to write header");
+        }
+        // =======================================================================
+
         // We don't want to include the <UNK> that was used to train
         inserted.insert("<UNK>".into());
 
@@ -176,6 +193,13 @@ impl UnigramTrainer {
             .collect::<Vec<_>>();
         if need_add_unk {
             special_tokens.insert(0, (self.unk_token.clone().unwrap(), 0.0));
+        }
+
+        // Log the final tokens to the CSV file
+        let mut id = 0;
+        for (token, score) in special_tokens.iter().chain(pieces.iter()) {
+            writeln!(file,"{},{},{},finalize,false", id, token.to_string(), score).expect("Unable to write to file");
+            id += 1;
         }
 
         Unigram::from(
@@ -279,6 +303,7 @@ impl UnigramTrainer {
         model: &Unigram,
         pieces: &[SentencePiece],
         sentences: &[Sentence],
+        _iter: &usize,  // (Pietro) Current iteration number
     ) -> Vec<SentencePiece> {
         let mut always_keep = vec![true; pieces.len()];
         let mut alternatives: Vec<Vec<usize>> = vec![Vec::new(); pieces.len()];
@@ -364,6 +389,21 @@ impl UnigramTrainer {
         let mut new_pieces: Vec<SentencePiece> = Vec::with_capacity(self.vocab_size as usize);
         new_pieces.push(pieces[0].clone());
 
+        // =======================================================================
+        // (Pietro): Open the CSV file in append mode
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("pruning_log.csv")
+            .expect("Unable to open file");
+        
+        // Log header if the file is empty
+        if file.metadata().unwrap().len() == 0 {
+            writeln!(file, "id,token,loss,pruning_step,is_pruned").expect("Unable to write header");
+        }
+        // =======================================================================
+
+
         // Finally, computes how likely the LM likelihood is reduced if
         // the sentencepiece[i] is removed from the vocabulary.
         // Since the exact computation of loss is difficult, we compute the
@@ -421,12 +461,25 @@ impl UnigramTrainer {
         let pruned_size = desired_vocab_size.max(pruned_size);
 
         candidates.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap());
-        for (id, _score) in candidates {
+        for (id, _score) in &candidates {
             if new_pieces.len() == pruned_size {
                 break;
             }
-            new_pieces.push(pieces[id].clone());
+            new_pieces.push(pieces[*id].clone());
         }
+
+        // =======================================================================
+        // (Pietro): Log the candidates to the CSV file
+        // Create a HashSet of tokens in new_pieces for quick lookup
+        let new_pieces_set: HashSet<_> = new_pieces.iter().map(|(token, _)| token).collect();
+        
+        // Log candidates to the CSV file
+        for (id, loss) in &candidates {
+            let token = &pieces[*id].0;
+            let is_pruned = !new_pieces_set.contains(token);
+            writeln!(file, "{},{},{},{},{}", id, token.to_string(), loss, _iter, is_pruned).expect("Unable to write to file");
+        }
+        // =======================================================================
 
         new_pieces.to_vec()
     }
@@ -568,6 +621,7 @@ impl UnigramTrainer {
             return Err(Box::new(UnigramTrainerError::VocabularyTooSmall));
         }
         let mut new_model = Unigram::from(pieces.clone(), Some(0), false)?;
+        let mut loop_counter = 0;
         loop {
             // Sub-EM iteration.
             for _iter in 0..self.n_sub_iterations {
@@ -599,8 +653,11 @@ impl UnigramTrainer {
             }
 
             // Prunes pieces.
-            pieces = self.prune_sentence_pieces(&new_model, &pieces, &sentences);
+            // (Pietro): Add current iteration number
+            pieces = self.prune_sentence_pieces(&new_model, &pieces, &sentences, &loop_counter);
             new_model = Unigram::from(pieces.clone(), Some(0), false)?;
+            
+            loop_counter += 1;
         }
         self.finalize_progress(&progress, expected_updates);
 
