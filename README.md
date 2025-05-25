@@ -6,7 +6,7 @@ Specifically, it creates:
 
 - `all_merges.jsonl`: despite the name (I thought these where "all" merges), these are the initial pairs extracted from words (note: words are computed by applying pretokenisation, e.g., whitespace splitting). This file is *not* what you want, yet I left it there just in case.
 
-- `implemented_merges.jsonl`: this is the file containing all merge pairs and their counts. THis is the file that you want.
+- `implemented_merges.jsonl`: this is the file containing all merge pairs and their counts. This is the file that you want.
 
 
 ## Quickstart and Example
