@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
-use std::fs::OpenOptions;  // (Pietro) Added for logging
-use std::io::Write;  // (Pietro) Added for logging
-use serde_json::json;  // (Pietro) Added for JSON serialization
+use std::fs::OpenOptions;
+use std::io::Write;
+use serde_json::json;
 
 // A token and a score
 type SentencePiece = (String, f64);
@@ -282,7 +282,7 @@ impl UnigramTrainer {
         model: &Unigram,
         pieces: &[SentencePiece],
         sentences: &[Sentence],
-    ) -> (Vec<SentencePiece>, HashSet<String>) {
+    ) -> (Vec<SentencePiece>, Vec<SentencePiece>) {
         let mut always_keep = vec![true; pieces.len()];
         let mut alternatives: Vec<Vec<usize>> = vec![Vec::new(); pieces.len()];
 
@@ -366,8 +366,6 @@ impl UnigramTrainer {
         let mut candidates: Vec<(usize, f64)> = vec![];
         let mut new_pieces: Vec<SentencePiece> = Vec::with_capacity(self.vocab_size as usize);
         new_pieces.push(pieces[0].clone());
-        
-        let mut always_keeper_tokens: HashSet<String> = HashSet::new();
 
         // Finally, computes how likely the LM likelihood is reduced if
         // the sentencepiece[i] is removed from the vocabulary.
@@ -384,7 +382,6 @@ impl UnigramTrainer {
             } else if alternatives[id].is_empty() {
                 // no alternatives. Keeps this entry.
                 new_pieces.push((token.to_string(), *score));
-                always_keeper_tokens.insert(token.to_string());
             } else {
                 let mut f = 0.0; // the frequency of pieces[i];
 
@@ -427,6 +424,13 @@ impl UnigramTrainer {
         let pruned_size = desired_vocab_size.max(pruned_size);
 
         candidates.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap());
+                
+        // Create full_candidates_pieces without size filtering
+        let mut full_candidates_pieces = vec![];
+        for (id, _score) in &candidates {
+            full_candidates_pieces.push(pieces[*id].clone());
+        }
+        
         for (id, _score) in candidates {
             if new_pieces.len() == pruned_size {
                 break;
@@ -434,7 +438,7 @@ impl UnigramTrainer {
             new_pieces.push(pieces[id].clone());
         }
 
-        (new_pieces.to_vec(), always_keeper_tokens)
+        (new_pieces.to_vec(), full_candidates_pieces.to_vec())
     }
 
     /// Update the progress bar with the new provided length and message
@@ -495,7 +499,7 @@ impl UnigramTrainer {
 
         collected
     }
-    fn run_m_step(&self, pieces: &[SentencePiece], expected: &[f64]) -> (Vec<SentencePiece>, HashMap<String, f64>) {
+    fn run_m_step(&self, pieces: &[SentencePiece], expected: &[f64]) -> Vec<SentencePiece> {
         if pieces.len() != expected.len() {
             panic!(
                 "Those two iterators are supposed to be the same length ({} vs {})",
@@ -503,8 +507,8 @@ impl UnigramTrainer {
                 expected.len()
             );
         }
-        let mut new_pieces: Vec<SentencePiece> = Vec::with_capacity(self.vocab_size.try_into().unwrap());
-        let mut token_frequencies: HashMap<String, f64> = HashMap::new();
+        let mut new_pieces: Vec<SentencePiece> =
+            Vec::with_capacity(self.vocab_size.try_into().unwrap());
 
         let mut sum = 0.0;
         let expected_frequency_threshold = 0.5;
@@ -513,14 +517,12 @@ impl UnigramTrainer {
             // Always keep unk.
             if i == 0 {
                 new_pieces.push((piece.clone(), f64::NAN));
-                token_frequencies.insert(piece.clone(), f64::NAN);
                 continue;
             }
             if *freq < expected_frequency_threshold {
                 continue;
             }
             new_pieces.push((piece.clone(), *freq));
-            token_frequencies.insert(piece.clone(), *freq);
             sum += freq;
         }
         // // Here we do not use the original EM, but use the
@@ -532,9 +534,8 @@ impl UnigramTrainer {
             .into_iter()
             .map(|(s, c)| (s, digamma(c) - logsum))
             .collect();
-        (new_pieces, token_frequencies)
+        new_pieces
     }
-
     pub fn do_train(
         &self,
         sentences: Vec<Sentence>,
@@ -577,13 +578,7 @@ impl UnigramTrainer {
             return Err(Box::new(UnigramTrainerError::VocabularyTooSmall));
         }
         let mut new_model = Unigram::from(pieces.clone(), Some(0), false)?;
-        
-        let mut loop_counter = 0;  // (Pietro)
-        let penultimate_size = (desired_vocab_size as f64 / self.shrinking_factor).ceil() as usize;  // (Pietro)
-        let mut tokens_before_last_pruning = None;  // (Pietro) Store the tokens before the last pruning
-        let mut always_keeper_tokens: HashSet<String> = HashSet::new();  // (Pietro) Store always keeper tokens
-        let mut token_frequencies: HashMap<String, f64> = HashMap::new();  // (Pietro) Store token frequencies
-
+        let mut full_candidates_pieces: Option<Vec<SentencePiece>> = None;  // (Pietro)
         loop {
             // Sub-EM iteration.
             for _iter in 0..self.n_sub_iterations {
@@ -591,13 +586,7 @@ impl UnigramTrainer {
                 let (_objective, _num_tokens, expected) = self.run_e_step(&new_model, &sentences);
 
                 // Executes M step.
-                let (updated_pieces, _token_frequencies) = self.run_m_step(&pieces, &expected);
-                pieces = updated_pieces;
-
-                if tokens_before_last_pruning.is_none() {
-                    token_frequencies = _token_frequencies;
-                }
-                
+                pieces = self.run_m_step(&pieces, &expected);
                 new_model = Unigram::from(pieces.clone(), Some(0), false)?;
 
                 // Useful comment for checking compatibility with spm
@@ -614,11 +603,6 @@ impl UnigramTrainer {
                 }
             } // end of Sub EM iteration
 
-            // (Pietro) Check if we are in the penultimate iteration
-            if pieces.len() <= penultimate_size && pieces.len() > desired_vocab_size {
-                tokens_before_last_pruning = Some(pieces.clone());
-            }
-
             // Stops the iteration when the size of sentences reaches to the
             // desired symbol size.
             if pieces.len() <= desired_vocab_size {
@@ -626,68 +610,65 @@ impl UnigramTrainer {
             }
 
             // Prunes pieces.
-            let (pruned_pieces, pruned_always_keeper_tokens) = self.prune_sentence_pieces(&new_model, &pieces, &sentences);
-            pieces = pruned_pieces;
-            always_keeper_tokens.extend(pruned_always_keeper_tokens);
-            
+            let (new_pieces, full_candidates) = self.prune_sentence_pieces(&new_model, &pieces, &sentences);
+            pieces = new_pieces;
+            full_candidates_pieces = Some(full_candidates);  // (Pietro)
             new_model = Unigram::from(pieces.clone(), Some(0), false)?;
-            loop_counter += 1;  // (Pietro)
         }
-        
         self.finalize_progress(&progress, expected_updates);
 
         // Finally, adjusts the size of sentencepices to be |vocab_size|.
-        let finalized_model = self.finalize(new_model, required_chars)?;  // (Pietro)
+        let finalized_model = self.finalize(new_model, required_chars)?;
 
+        // (Pietro) ========
         // Compare tokens and log to CSV
-        if let Some(tokens_before_last_pruning) = tokens_before_last_pruning {
-            let finalized_tokens: HashSet<_> = finalized_model.iter().map(|(t, _)| t).collect();
-            let last_pruned_tokens: HashSet<_> = pieces.iter().map(|(t, _)| t).collect();
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open("pruning_log.jsonl")
+            .expect("Unable to open file");
+        
+        // Create maps for efficient score lookups
+        let full_candidates_map: HashMap<&String, f64> = full_candidates_pieces.as_ref()
+            .map(|candidates| candidates.iter().map(|(t, s)| (t, *s)).collect())
+            .unwrap_or_default();
+        let pieces_map: HashMap<&String, f64> = pieces.iter().map(|(t, s)| (t, *s)).collect();
+        let finalized_map: HashMap<&String, f64> = finalized_model.iter().map(|(t, s)| (t, *s)).collect();
+        
+        // Collect all unique tokens from all sources
+        let mut all_tokens: HashSet<&String> = HashSet::new();
+        all_tokens.extend(full_candidates_map.keys());
+        all_tokens.extend(pieces_map.keys());
+        all_tokens.extend(finalized_map.keys());
+        
+        // Iterate over all unique tokens collected from various sources (full_candidates, pieces, finalized_model).
+        // For each token, determine its loss and source, and log the information in JSONL format.
+        for token in all_tokens {
+            let in_pieces = pieces_map.contains_key(token);
+            let in_final = finalized_map.contains_key(token);
             
-            let filename = format!("pruning_log_iter{}.jsonl", loop_counter);
-            let mut file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&filename)
-                .expect("Unable to open file");
+            let (loss, source) = if let Some(&loss) = full_candidates_map.get(token) {
+                (loss, "full_candidates")
+            } else if let Some(&score) = pieces_map.get(token) {
+                (score, "pieces")
+            } else if let Some(&score) = finalized_map.get(token) {
+                (score, "final")
+            } else {
+                panic!("Token should be found in at least one source");
+            };
             
-            for (token, loss) in tokens_before_last_pruning.iter() {
-                let is_pruned = !last_pruned_tokens.contains(token);
-                let is_pruned_finalize = !finalized_tokens.contains(token);
-                let always_keep = always_keeper_tokens.contains(token);
-
-                let record = json!({
-                    "token": token,
-                    "loss": loss,
-                    "is_pruned": is_pruned,
-                    "is_pruned_finalize": is_pruned_finalize,
-                    "only_finalize": false,
-                    "always_keep": always_keep,
-                    "freq": token_frequencies.get(token).copied().unwrap_or(f64::NAN),
-                });
-                writeln!(file, "{}", record.to_string()).expect("Unable to write JSONL data");
-            }
-
-            // Write all the tokens in finalized_model that are not in tokens_before_last_pruning
-            let tokens_before_last_pruning_set: HashSet<_> = tokens_before_last_pruning.iter().map(|(t, _)| t).collect();
-            for (token, score) in finalized_model.iter() {
-                if !tokens_before_last_pruning_set.contains(token) {
-                    let always_keep = always_keeper_tokens.contains(token);
-                    let record = json!({
-                        "token": token,
-                        "loss": score,
-                        "is_pruned": false,
-                        "is_pruned_finalize": false,
-                        "only_finalize": true,
-                        "always_keep": always_keep,
-                        "freq": token_frequencies.get(token).copied().unwrap_or(f64::NAN),
-                    });
-                    writeln!(file, "{}", record.to_string()).expect("Unable to write JSONL data");
-                }
-            }
-
+            let record = json!({
+                "token": token,
+                "loss": loss,
+                "source": source,
+                "in_pieces": in_pieces,
+                "in_final": in_final,
+            });
+            writeln!(file, "{}", record.to_string()).expect("Unable to write JSONL data");
         }
-
+        // ======== (Pietro)
+        
         *model = finalized_model;  // (Pietro)
         Ok(self.special_tokens.clone())
     }
