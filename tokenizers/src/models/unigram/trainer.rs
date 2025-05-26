@@ -495,7 +495,7 @@ impl UnigramTrainer {
 
         collected
     }
-    fn run_m_step(&self, pieces: &[SentencePiece], expected: &[f64]) -> Vec<SentencePiece> {
+    fn run_m_step(&self, pieces: &[SentencePiece], expected: &[f64]) -> (Vec<SentencePiece>, HashMap<String, f64>) {
         if pieces.len() != expected.len() {
             panic!(
                 "Those two iterators are supposed to be the same length ({} vs {})",
@@ -503,8 +503,8 @@ impl UnigramTrainer {
                 expected.len()
             );
         }
-        let mut new_pieces: Vec<SentencePiece> =
-            Vec::with_capacity(self.vocab_size.try_into().unwrap());
+        let mut new_pieces: Vec<SentencePiece> = Vec::with_capacity(self.vocab_size.try_into().unwrap());
+        let mut token_frequencies: HashMap<String, f64> = HashMap::new();
 
         let mut sum = 0.0;
         let expected_frequency_threshold = 0.5;
@@ -513,12 +513,14 @@ impl UnigramTrainer {
             // Always keep unk.
             if i == 0 {
                 new_pieces.push((piece.clone(), f64::NAN));
+                token_frequencies.insert(piece.clone(), f64::NAN);
                 continue;
             }
             if *freq < expected_frequency_threshold {
                 continue;
             }
             new_pieces.push((piece.clone(), *freq));
+            token_frequencies.insert(piece.clone(), *freq);
             sum += freq;
         }
         // // Here we do not use the original EM, but use the
@@ -530,7 +532,7 @@ impl UnigramTrainer {
             .into_iter()
             .map(|(s, c)| (s, digamma(c) - logsum))
             .collect();
-        new_pieces
+        (new_pieces, token_frequencies)
     }
 
     pub fn do_train(
@@ -580,7 +582,8 @@ impl UnigramTrainer {
         let penultimate_size = (desired_vocab_size as f64 / self.shrinking_factor).ceil() as usize;  // (Pietro)
         let mut tokens_before_last_pruning = None;  // (Pietro) Store the tokens before the last pruning
         let mut always_keeper_tokens: HashSet<String> = HashSet::new();  // (Pietro) Store always keeper tokens
-        
+        let mut token_frequencies: HashMap<String, f64> = HashMap::new();  // (Pietro) Store token frequencies
+
         loop {
             // Sub-EM iteration.
             for _iter in 0..self.n_sub_iterations {
@@ -588,7 +591,13 @@ impl UnigramTrainer {
                 let (_objective, _num_tokens, expected) = self.run_e_step(&new_model, &sentences);
 
                 // Executes M step.
-                pieces = self.run_m_step(&pieces, &expected);
+                let (updated_pieces, _token_frequencies) = self.run_m_step(&pieces, &expected);
+                pieces = updated_pieces;
+
+                if tokens_before_last_pruning.is_none() {
+                    token_frequencies = _token_frequencies;
+                }
+                
                 new_model = Unigram::from(pieces.clone(), Some(0), false)?;
 
                 // Useful comment for checking compatibility with spm
@@ -654,6 +663,7 @@ impl UnigramTrainer {
                     "is_pruned_finalize": is_pruned_finalize,
                     "only_finalize": false,
                     "always_keep": always_keep,
+                    "freq": token_frequencies.get(token).copied().unwrap_or(f64::NAN),
                 });
                 writeln!(file, "{}", record.to_string()).expect("Unable to write JSONL data");
             }
@@ -670,6 +680,7 @@ impl UnigramTrainer {
                         "is_pruned_finalize": false,
                         "only_finalize": true,
                         "always_keep": always_keep,
+                        "freq": token_frequencies.get(token).copied().unwrap_or(f64::NAN),
                     });
                     writeln!(file, "{}", record.to_string()).expect("Unable to write JSONL data");
                 }
