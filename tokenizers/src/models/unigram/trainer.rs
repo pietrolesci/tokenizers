@@ -282,7 +282,7 @@ impl UnigramTrainer {
         model: &Unigram,
         pieces: &[SentencePiece],
         sentences: &[Sentence],
-    ) -> (Vec<SentencePiece>, Vec<SentencePiece>) {
+    ) -> (Vec<SentencePiece>, Vec<(SentencePiece, f64)>) {
         let mut always_keep = vec![true; pieces.len()];
         let mut alternatives: Vec<Vec<usize>> = vec![Vec::new(); pieces.len()];
 
@@ -425,12 +425,12 @@ impl UnigramTrainer {
 
         candidates.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap());
                 
-        // Create full_candidates_pieces without size filtering
-        let mut full_candidates_score = vec![];
-        let mut full_candidates_loss = vec![];
+        // Create full_candidates without size filtering
+        // Note that we are using `candidates` which is a Vec<(usize, f64)>
+        // so we extract the (token, score) from pieces and the loss from candidates.
+        let mut full_candidates = vec![];
         for (id, _loss) in &candidates {
-            full_candidates_loss.push(candidates[*id].clone());
-            full_candidates_score.push(pieces[*id].clone());
+            full_candidates.push((pieces[*id].clone(), *_loss));
         }
         
         for (id, _score) in candidates {
@@ -440,7 +440,7 @@ impl UnigramTrainer {
             new_pieces.push(pieces[id].clone());
         }
 
-        (new_pieces.to_vec(), full_candidates_loss.to_vec(), full_candidates_score.to_vec())
+        (new_pieces.to_vec(), full_candidates.to_vec())
     }
 
     /// Update the progress bar with the new provided length and message
@@ -580,8 +580,7 @@ impl UnigramTrainer {
             return Err(Box::new(UnigramTrainerError::VocabularyTooSmall));
         }
         let mut new_model = Unigram::from(pieces.clone(), Some(0), false)?;
-        let mut full_candidates_score: Option<Vec<SentencePiece>> = None;  // (Pietro)
-        let mut full_candidates_loss: Option<Vec<SentencePiece>> = None;  // (Pietro)
+        let mut full_candidates: Option<Vec<(SentencePiece, f64)>> = None;  // (Pietro)
         loop {
             // Sub-EM iteration.
             for _iter in 0..self.n_sub_iterations {
@@ -613,10 +612,9 @@ impl UnigramTrainer {
             }
 
             // Prunes pieces.
-            let (new_pieces, new_candidates_loss, new_candidates_score) = self.prune_sentence_pieces(&new_model, &pieces, &sentences);
+            let (new_pieces, new_candidates) = self.prune_sentence_pieces(&new_model, &pieces, &sentences);
             pieces = new_pieces;
-            full_candidates_loss = Some(new_candidates_loss);  // (Pietro)
-            full_candidates_score = Some(new_candidates_score);  // (Pietro)
+            full_candidates = Some(new_candidates);  // (Pietro)
             new_model = Unigram::from(pieces.clone(), Some(0), false)?;
         }
         self.finalize_progress(&progress, expected_updates);
@@ -624,26 +622,23 @@ impl UnigramTrainer {
         // Finally, adjusts the size of sentencepices to be |vocab_size|.
         let finalized_model = self.finalize(new_model, required_chars)?;
 
-        // Write full_candidates_pieces to JSONL
-        if let Some(ref full_candidates) = full_candidates_pieces {
-            let mut candidates_file = OpenOptions::new()
+        // Write full_candidates to JSONL
+        if let Some(ref _full_candidates) = full_candidates {
+            let mut _candidates_file = OpenOptions::new()
                 .create(true)
                 .write(true)
                 .truncate(true)
-                .open("full_candidates_pieces.jsonl")
+                .open("full_candidates.jsonl")
                 .expect("Unable to open candidates file");
             
-            for (token, score) in full_candidates {
-                let record = json!({
-                    "token": token,
-                    "score": score
-                });
-                writeln!(candidates_file, "{}", record.to_string()).expect("Unable to write candidates data");
+            for ((token, score), loss) in _full_candidates {
+                let record = json!({"token": token, "loss": loss, "score": score});
+                writeln!(_candidates_file, "{}", record.to_string()).expect("Unable to write candidates data");
             }
         }
 
         // Write pieces to JSONL
-        let mut pieces_file = OpenOptions::new()
+        let mut _pieces_file = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
@@ -651,84 +646,11 @@ impl UnigramTrainer {
             .expect("Unable to open pieces file");
 
         for (token, score) in &pieces {
-            let record = json!({
-                "token": token,
-                "score": score
-            });
-            writeln!(pieces_file, "{}", record.to_string()).expect("Unable to write pieces data");
+            let record = json!({"token": token, "score": score});
+            writeln!(_pieces_file, "{}", record.to_string()).expect("Unable to write pieces data");
         }
-
-        // (Pietro) ========
-        // Compare tokens and log to CSV
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open("pruning_log.jsonl")
-            .expect("Unable to open file");
         
-        // Create maps for efficient score lookups
-        let candidates_loss_map: HashMap<&String, f64> = full_candidates_loss.as_ref()
-            .map(|candidates| candidates.iter().map(|(t, s)| (t, *s)).collect())
-            .unwrap_or_default();
-        let candidates_score_map: HashMap<&String, f64> = full_candidates_score.as_ref()
-            .map(|candidates| candidates.iter().map(|(t, s)| (t, *s)).collect())
-            .unwrap_or_default();
-        let pieces_map: HashMap<&String, f64> = pieces.iter().map(|(t, s)| (t, *s)).collect();
-        let finalized_map: HashMap<&String, f64> = finalized_model.iter().map(|(t, s)| (t, *s)).collect();
-        
-        // Collect all unique tokens from all sources
-        let mut all_tokens: HashSet<&String> = HashSet::new();
-        all_tokens.extend(candidates_loss_map.keys());
-        all_tokens.extend(candidates_score_map.keys());
-        all_tokens.extend(pieces_map.keys());
-        all_tokens.extend(finalized_map.keys());
-        
-        // Iterate over all unique tokens collected from various sources (full_candidates, pieces, finalized_model).
-        // For each token, determine its loss and source, and log the information in JSONL format.
-        for token in all_tokens {
-            let in_pieces = pieces_map.contains_key(token);
-            let in_final = finalized_map.contains_key(token);
-            
-            let (loss, source) = if let Some(&loss) = candidates_loss_map.get(token) {
-                (loss, "full_candidates")
-            } else if let Some(&score) = candidates_score_map.get(token) {
-                panic!("Token should not be in candidates_score_map, but not in candidates_loss_map!");
-            } else if let Some(&score) = pieces_map.get(token) {
-                panic!("Token should not be in pieces_map, but not in candidates_loss_map!");
-            } else if let Some(&score) = finalized_map.get(token) {
-                // We don't have a loss for these tokens.
-                (-1000, "final")
-            } else {
-                panic!("Token should be found in at least one source");
-            };
-
-            let (score, score_source) = if let Some(&score) = candidates_score_map.get(token) {
-                (score, "full_candidates")
-            } else if let Some(&loss) = candidates_loss_map.get(token) {
-                panic!("Token should not be in candidates_loss_map, but not in candidates_score_map!");
-            } else if let Some(&score) = pieces_map.get(token) {
-                panic!("Token should not be in pieces_map, but not in candidates_score_map!");
-                // (score, "pieces")
-            } else if let Some(&score) = finalized_map.get(token) {
-                (score, "final")
-            } else {
-                panic!("Token should be found in at least one source");
-            };
-            
-            let record = json!({
-                "token": token,
-                "loss": loss,
-                "score": score,
-                "source": source,
-                "in_pieces": in_pieces,
-                "in_final": in_final,
-            });
-            writeln!(file, "{}", record.to_string()).expect("Unable to write JSONL data");
-        }
-        // ======== (Pietro)
-        
-        *model = finalized_model;  // (Pietro)
+        *model = finalized_model;
         Ok(self.special_tokens.clone())
     }
 }
