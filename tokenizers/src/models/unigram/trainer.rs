@@ -581,6 +581,7 @@ impl UnigramTrainer {
         }
         let mut new_model = Unigram::from(pieces.clone(), Some(0), false)?;
         let mut full_candidates: Option<Vec<(SentencePiece, f64)>> = None;  // (Pietro)
+        let mut full_pieces: Option<Vec<SentencePiece>> = None;  // (Pietro)
         loop {
             // Sub-EM iteration.
             for _iter in 0..self.n_sub_iterations {
@@ -614,6 +615,7 @@ impl UnigramTrainer {
             // Prunes pieces.
             let (new_pieces, new_candidates) = self.prune_sentence_pieces(&new_model, &pieces, &sentences);
             pieces = new_pieces;
+            full_pieces = Some(pieces.clone());  // (Pietro)
             full_candidates = Some(new_candidates);  // (Pietro)
             new_model = Unigram::from(pieces.clone(), Some(0), false)?;
         }
@@ -638,16 +640,18 @@ impl UnigramTrainer {
         }
 
         // Write pieces to JSONL
-        let mut _pieces_file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open("pieces.jsonl")
-            .expect("Unable to open pieces file");
+        if let Some(ref _full_pieces) = full_pieces {
+            let mut _pieces_file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open("pieces.jsonl")
+                .expect("Unable to open pieces file");
 
-        for (token, score) in &pieces {
-            let record = json!({"token": token, "score": score});
-            writeln!(_pieces_file, "{}", record.to_string()).expect("Unable to write pieces data");
+            for (token, score) in _full_pieces {
+                let record = json!({"token": token, "score": score});
+                writeln!(_pieces_file, "{}", record.to_string()).expect("Unable to write pieces data");
+            }
         }
         
         *model = finalized_model;
