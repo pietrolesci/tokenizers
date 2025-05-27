@@ -426,9 +426,11 @@ impl UnigramTrainer {
         candidates.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap());
                 
         // Create full_candidates_pieces without size filtering
-        let mut full_candidates_pieces = vec![];
-        for (id, _score) in &candidates {
-            full_candidates_pieces.push(pieces[*id].clone());
+        let mut full_candidates_score = vec![];
+        let mut full_candidates_loss = vec![];
+        for (id, _loss) in &candidates {
+            full_candidates_loss.push(candidates[*id].clone());
+            full_candidates_score.push(pieces[*id].clone());
         }
         
         for (id, _score) in candidates {
@@ -438,7 +440,7 @@ impl UnigramTrainer {
             new_pieces.push(pieces[id].clone());
         }
 
-        (new_pieces.to_vec(), full_candidates_pieces.to_vec())
+        (new_pieces.to_vec(), full_candidates_loss.to_vec(), full_candidates_score.to_vec())
     }
 
     /// Update the progress bar with the new provided length and message
@@ -578,7 +580,8 @@ impl UnigramTrainer {
             return Err(Box::new(UnigramTrainerError::VocabularyTooSmall));
         }
         let mut new_model = Unigram::from(pieces.clone(), Some(0), false)?;
-        let mut full_candidates_pieces: Option<Vec<SentencePiece>> = None;  // (Pietro)
+        let mut full_candidates_score: Option<Vec<SentencePiece>> = None;  // (Pietro)
+        let mut full_candidates_loss: Option<Vec<SentencePiece>> = None;  // (Pietro)
         loop {
             // Sub-EM iteration.
             for _iter in 0..self.n_sub_iterations {
@@ -610,9 +613,10 @@ impl UnigramTrainer {
             }
 
             // Prunes pieces.
-            let (new_pieces, full_candidates) = self.prune_sentence_pieces(&new_model, &pieces, &sentences);
+            let (new_pieces, new_candidates_loss, new_candidates_score) = self.prune_sentence_pieces(&new_model, &pieces, &sentences);
             pieces = new_pieces;
-            full_candidates_pieces = Some(full_candidates);  // (Pietro)
+            full_candidates_loss = Some(new_candidates_loss);  // (Pietro)
+            full_candidates_score = Some(new_candidates_score);  // (Pietro)
             new_model = Unigram::from(pieces.clone(), Some(0), false)?;
         }
         self.finalize_progress(&progress, expected_updates);
@@ -664,7 +668,10 @@ impl UnigramTrainer {
             .expect("Unable to open file");
         
         // Create maps for efficient score lookups
-        let full_candidates_map: HashMap<&String, f64> = full_candidates_pieces.as_ref()
+        let candidates_loss_map: HashMap<&String, f64> = full_candidates_loss.as_ref()
+            .map(|candidates| candidates.iter().map(|(t, s)| (t, *s)).collect())
+            .unwrap_or_default();
+        let candidates_score_map: HashMap<&String, f64> = full_candidates_score.as_ref()
             .map(|candidates| candidates.iter().map(|(t, s)| (t, *s)).collect())
             .unwrap_or_default();
         let pieces_map: HashMap<&String, f64> = pieces.iter().map(|(t, s)| (t, *s)).collect();
@@ -672,7 +679,8 @@ impl UnigramTrainer {
         
         // Collect all unique tokens from all sources
         let mut all_tokens: HashSet<&String> = HashSet::new();
-        all_tokens.extend(full_candidates_map.keys());
+        all_tokens.extend(candidates_loss_map.keys());
+        all_tokens.extend(candidates_score_map.keys());
         all_tokens.extend(pieces_map.keys());
         all_tokens.extend(finalized_map.keys());
         
@@ -682,10 +690,26 @@ impl UnigramTrainer {
             let in_pieces = pieces_map.contains_key(token);
             let in_final = finalized_map.contains_key(token);
             
-            let (loss, source) = if let Some(&loss) = full_candidates_map.get(token) {
+            let (loss, source) = if let Some(&loss) = candidates_loss_map.get(token) {
                 (loss, "full_candidates")
+            } else if let Some(&score) = candidates_score_map.get(token) {
+                panic!("Token should not be in candidates_score_map, but not in candidates_loss_map!");
             } else if let Some(&score) = pieces_map.get(token) {
-                (score, "pieces")
+                panic!("Token should not be in pieces_map, but not in candidates_loss_map!");
+            } else if let Some(&score) = finalized_map.get(token) {
+                // We don't have a loss for these tokens.
+                (-1000, "final")
+            } else {
+                panic!("Token should be found in at least one source");
+            };
+
+            let (score, score_source) = if let Some(&score) = candidates_score_map.get(token) {
+                (score, "full_candidates")
+            } else if let Some(&loss) = candidates_loss_map.get(token) {
+                panic!("Token should not be in candidates_loss_map, but not in candidates_score_map!");
+            } else if let Some(&score) = pieces_map.get(token) {
+                panic!("Token should not be in pieces_map, but not in candidates_score_map!");
+                // (score, "pieces")
             } else if let Some(&score) = finalized_map.get(token) {
                 (score, "final")
             } else {
@@ -695,6 +719,7 @@ impl UnigramTrainer {
             let record = json!({
                 "token": token,
                 "loss": loss,
+                "score": score,
                 "source": source,
                 "in_pieces": in_pieces,
                 "in_final": in_final,
