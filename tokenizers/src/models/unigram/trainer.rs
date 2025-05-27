@@ -620,6 +620,40 @@ impl UnigramTrainer {
         // Finally, adjusts the size of sentencepices to be |vocab_size|.
         let finalized_model = self.finalize(new_model, required_chars)?;
 
+        // Write full_candidates_pieces to JSONL
+        if let Some(ref full_candidates) = full_candidates_pieces {
+            let mut candidates_file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open("full_candidates_pieces.jsonl")
+                .expect("Unable to open candidates file");
+            
+            for (token, score) in full_candidates {
+                let record = json!({
+                    "token": token,
+                    "score": score
+                });
+                writeln!(candidates_file, "{}", record.to_string()).expect("Unable to write candidates data");
+            }
+        }
+
+        // Write pieces to JSONL
+        let mut pieces_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open("pieces.jsonl")
+            .expect("Unable to open pieces file");
+
+        for (token, score) in &pieces {
+            let record = json!({
+                "token": token,
+                "score": score
+            });
+            writeln!(pieces_file, "{}", record.to_string()).expect("Unable to write pieces data");
+        }
+
         // (Pietro) ========
         // Compare tokens and log to CSV
         let mut file = OpenOptions::new()
